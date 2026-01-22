@@ -18,7 +18,7 @@ import cloudinary.uploader
 
 # --- 1. アプリの設定 ---
 st.set_page_config(page_title="ライブ参戦記録 & 推し活マップ", layout="wide")
-st.title("🎸 ライブ参戦記録 & 推し活マップ (Yearly Filter)")
+st.title("🎸 ライブ参戦記録 & 推し活マップ (Fixed Edit)")
 
 # デフォルトの拠点（東京駅）
 DEFAULT_HOME_COORDS = (35.6812, 139.7671)
@@ -72,25 +72,45 @@ try:
 except Exception:
     st.stop()
 
-# --- 3. ヘルパー関数 ---
-geolocator = Nominatim(user_agent="my_live_app_mvp_v31")
+# --- 3. ヘルパー関数 & 辞書設定 ---
+geolocator = Nominatim(user_agent="my_live_app_mvp_v33")
+
+# 名寄せ辞書
+VENUE_NAME_MAP = {
+    "Kアリーナ": "Kアリーナ横浜",
+    "kアリーナ": "Kアリーナ横浜",
+    "Ｋアリーナ": "Kアリーナ横浜",
+    "横浜アリーナ": "横浜アリーナ",
+    "横アリ": "横浜アリーナ",
+    "ヨコアリ": "横浜アリーナ",
+    "愛知スカイエキスポ": "Aichi Sky Expo",
+    "スカイエキスポ": "Aichi Sky Expo",
+    "愛知県国際展示場": "Aichi Sky Expo",
+    "AICHI SKY EXPO": "Aichi Sky Expo",
+    "東京ドーム": "東京ドーム",
+}
+
 VENUE_OVERRIDES = {
-    "愛知県国際展示場": [34.8613, 136.8123],
     "Aichi Sky Expo": [34.8613, 136.8123],
-    "恵比寿ガーデンホール": [35.6421, 139.7132],
     "恵比寿ザ・ガーデンホール": [35.6421, 139.7132],
     "横浜アリーナ": [35.5175, 139.6172],
     "Kアリーナ横浜": [35.4636, 139.6310],
-    "Kアリーナ": [35.4636, 139.6310],
+    "日本武道館": [35.6933, 139.7498],
 }
+
+def normalize_venue_name(name):
+    if not name: return ""
+    return VENUE_NAME_MAP.get(name, name)
 
 @st.cache_data
 def get_location_cached(place_name):
     if not place_name: return None
-    if place_name in VENUE_OVERRIDES: return VENUE_OVERRIDES[place_name]
+    normalized_name = normalize_venue_name(place_name)
+    if normalized_name in VENUE_OVERRIDES:
+        return VENUE_OVERRIDES[normalized_name]
     try:
         time.sleep(1)
-        location = geolocator.geocode(place_name)
+        location = geolocator.geocode(normalized_name)
         if location: return location.latitude, location.longitude
     except: return None
     return None
@@ -103,22 +123,15 @@ def upload_photo_to_cloudinary(uploaded_file):
         return response['secure_url']
     except Exception as e: return f"ERROR: {e}"
 
-# 🆕 年度計算用関数 (4月始まり)
 def get_fiscal_year(date_obj):
     if pd.isnull(date_obj): return "不明"
     try:
-        # datetime型か確認
-        if isinstance(date_obj, str):
-            date_obj = pd.to_datetime(date_obj)
-        
+        if isinstance(date_obj, str): date_obj = pd.to_datetime(date_obj)
         year = date_obj.year
         month = date_obj.month
-        # 1月〜3月なら、前の年として扱う（例：2026年1月 → 2025年度）
-        if month < 1:
-            return year - 1
+        if month < 1: return year - 1
         return year
-    except:
-        return "不明"
+    except: return "不明"
 
 # --- 4. データ操作 ---
 def load_data(current_user_id):
@@ -144,17 +157,19 @@ def load_data(current_user_id):
         else:
             return pd.DataFrame()
 
+        if "会場名" in df.columns:
+            df["会場名"] = df["会場名"].apply(normalize_venue_name)
+
         if "日付" in df.columns and not df.empty:
-            df["日付"] = pd.to_datetime(df["日付"]) # 日付型に変換
+            df["日付"] = pd.to_datetime(df["日付"])
             df = df.sort_values("日付", ascending=False)
-            
-            # 🆕 年度カラムを追加
             df["年度"] = df["日付"].apply(get_fiscal_year)
             
         return df
     except: return pd.DataFrame()
 
 def add_record(record_dict):
+    record_dict["会場名"] = normalize_venue_name(record_dict["会場名"])
     row = [str(record_dict["日付"]), record_dict["ライブ名"], record_dict["アーティスト"], record_dict["会場名"], record_dict["感想"], record_dict["写真"], record_dict["lat"], record_dict["lon"], record_dict["ユーザーID"]]
     worksheet.append_row(row)
     st.cache_data.clear()
@@ -164,6 +179,7 @@ def delete_records(row_indices):
     st.cache_data.clear()
 
 def update_record(row_index, record_dict):
+    record_dict["会場名"] = normalize_venue_name(record_dict["会場名"])
     cell_range = f"A{row_index}:I{row_index}"
     values = [[str(record_dict["日付"]), record_dict["ライブ名"], record_dict["アーティスト"], record_dict["会場名"], record_dict["感想"], record_dict["写真"], record_dict["lat"], record_dict["lon"], record_dict["ユーザーID"]]]
     worksheet.update(range_name=cell_range, values=values)
@@ -171,7 +187,7 @@ def update_record(row_index, record_dict):
 
 # --- 5. アプリ本体 ---
 
-# === サイドバー: ユーザー & フィルター ===
+# === サイドバー ===
 st.sidebar.title("👤 設定 & フィルター")
 
 if "user_id" not in st.session_state:
@@ -185,29 +201,22 @@ if not current_user:
     st.warning("ユーザー名を入力してください")
     st.stop()
 
-# データ読み込み
 if 'data' not in st.session_state:
     st.session_state.data = load_data(current_user)
 else:
-    # 簡易リロード
     st.session_state.data = load_data(current_user)
 
 df_all = st.session_state.data
 
-# 🆕 期間フィルター（サイドバーに追加）
+# 期間フィルター
 if not df_all.empty:
-    # データの年度リストを作成（降順）
     years = sorted(df_all["年度"].unique().tolist(), reverse=True)
-    # 選択肢を作成
     options = ["全期間"] + [f"{y}年度" for y in years if y != "不明"]
-    
     selected_period = st.sidebar.radio("📅 表示期間", options)
     
-    # フィルタリング実行
     if selected_period == "全期間":
         df_display = df_all
     else:
-        # "2025年度" -> 2025 (int) に戻してフィルタ
         target_year = int(selected_period.replace("年度", ""))
         df_display = df_all[df_all["年度"] == target_year]
 else:
@@ -216,12 +225,10 @@ else:
 
 st.sidebar.divider()
 
-# === サイドバー: 拠点 & 入力 ===
 with st.sidebar.expander("🏠 拠点の入力", expanded=True):
     user_home_name = st.text_input("拠点（駅名など）", placeholder="例：新大阪駅")
     home_coords = DEFAULT_HOME_COORDS
     home_display_name = "東京駅"
-    
     if user_home_name:
         found_coords = get_location_cached(user_home_name)
         if found_coords:
@@ -268,13 +275,11 @@ if df_display.empty:
     else:
         st.warning(f"「{selected_period}」のデータはありません。")
 else:
-    # 期間ごとのタイトル表示
     st.markdown(f"### 📊 {selected_period} の推し活状況")
 
     tab1, tab2 = st.tabs(["🗺️ マップ", "📝 リスト & 分析"])
 
     with tab1:
-        # 距離計算
         total_distance_km = 0
         for index, row in df_display.iterrows():
             if pd.notnull(row['lat']) and pd.notnull(row['lon']):
@@ -286,27 +291,56 @@ else:
         c1.metric("参戦数", f"{len(df_display)} 回")
         c2.metric("総移動距離", f"{int(total_distance_km):,} km")
         
-        # 地図
         center_lat = df_display['lat'].mean()
         center_lon = df_display['lon'].mean()
         m = folium.Map(location=[center_lat, center_lon], zoom_start=5)
         
         folium.Marker(home_coords, icon=folium.Icon(color="blue", icon="home"), tooltip=home_display_name).add_to(m)
 
-        for _, row in df_display.iterrows():
-            if pd.notnull(row['lat']):
+        grouped = df_display.groupby('会場名')
+        for venue_name, group in grouped:
+            lat = group.iloc[0]['lat']
+            lon = group.iloc[0]['lon']
+            count = len(group)
+            
+            html = f"""
+            <div style="font-family:sans-serif; width:300px; max-height:300px; overflow-y:auto;">
+                <h4 style="color:#E63946; margin-bottom:5px; position:sticky; top:0; background:white; z-index:1;">
+                    <b>{venue_name}</b>
+                </h4>
+                <p><b>🏆 {selected_period}の参戦: {count}回</b></p>
+                <hr>
+            """
+            
+            group = group.sort_values('日付', ascending=False)
+            for _, row in group.iterrows():
+                img_tag = ""
+                photo_val = str(row.get("写真", ""))
+                if photo_val and photo_val != "None" and photo_val.startswith("http"):
+                    img_tag = f'<img src="{photo_val}" style="width:100%; border-radius:5px; margin-bottom:5px;">'
+                
                 date_str = row['日付'].strftime('%Y-%m-%d')
-                html = f"<b>{row['ライブ名']}</b><br>{date_str}<br>{row['会場名']}"
-                folium.Marker(
-                    [row['lat'], row['lon']],
-                    popup=folium.Popup(html, max_width=200),
-                    icon=folium.Icon(color="red", icon="music")
-                ).add_to(m)
+                html += f"""
+                <div style="margin-bottom:15px; background:#f9f9f9; padding:10px; border-radius:5px;">
+                    📅 {date_str}<br>
+                    🎤 <b>{row['アーティスト']}</b><br>
+                    🎵 {row['ライブ名']}<br>
+                    {img_tag}
+                    💬 {row['感想']}<br>
+                </div>
+                """
+            html += "</div>"
+            
+            folium.Marker(
+                [lat, lon],
+                popup=folium.Popup(html, max_width=320),
+                tooltip=f"{venue_name} ({count}回)",
+                icon=folium.Icon(color="red", icon="music")
+            ).add_to(m)
         
         st_folium(m, width="100%", height=400, returned_objects=[])
 
     with tab2:
-        # アーティスト割合（選択期間のみ）
         if "アーティスト" in df_display.columns:
             st.write("#### 🎨 アーティスト比率")
             counts = df_display['アーティスト'].value_counts().reset_index()
@@ -321,7 +355,6 @@ else:
         st.divider()
         st.write("#### 📜 記録一覧")
         
-        # 編集・削除用（フィルタ済みデータで操作可能）
         display_cols = ["日付", "ライブ名", "アーティスト", "会場名", "感想"]
         event = st.dataframe(
             df_display[display_cols],
@@ -331,11 +364,68 @@ else:
             use_container_width=True
         )
 
-        if event.selection.rows:
-            selected_rows = df_display.iloc[event.selection.rows]
+        selected_rows = event.selection.rows
+        
+        if selected_rows:
+            selected_df = df_display.iloc[selected_rows]
             st.write("---")
+            
+            # 🗑️ 削除ボタン
             if st.button(f"🗑️ 選択した {len(selected_rows)} 件を削除"):
-                target_indices = selected_rows['_row_index'].tolist()
+                target_indices = selected_df['_row_index'].tolist()
                 delete_records(target_indices)
                 st.success("削除しました")
                 st.rerun()
+
+            # ✏️ 編集モード (ここを復活させました！)
+            if len(selected_rows) == 1:
+                st.markdown("#### ✏️ 編集モード")
+                target_row = selected_df.iloc[0]
+                target_sheet_index = target_row['_row_index']
+                
+                with st.form("edit_form"):
+                    try:
+                        default_date = pd.to_datetime(target_row["日付"]).date()
+                    except:
+                        default_date = datetime.date.today()
+
+                    e_date = st.date_input("日付", value=default_date)
+                    e_live = st.text_input("ライブ名", value=target_row["ライブ名"])
+                    e_artist = st.text_input("アーティスト", value=target_row["アーティスト"])
+                    e_venue = st.text_input("会場名", value=target_row["会場名"])
+                    e_comment = st.text_area("感想", value=target_row["感想"])
+                    st.caption("写真を変更したい場合のみアップロードしてください")
+                    e_photo = st.file_uploader("写真の変更", type=["jpg", "png", "jpeg"])
+                    
+                    if st.form_submit_button("変更を保存"):
+                        with st.spinner("更新中..."):
+                            new_lat, new_lon = target_row["lat"], target_row["lon"]
+                            # 会場名が変わったら座標再取得
+                            # (名寄せは update_record の中で行われます)
+                            if e_venue != target_row["会場名"]:
+                                coords = get_location_cached(e_venue)
+                                if coords:
+                                    new_lat, new_lon = coords
+                            
+                            new_photo_url = target_row["写真"]
+                            if e_photo:
+                                res = upload_photo_to_cloudinary(e_photo)
+                                if res and not str(res).startswith("ERROR"):
+                                    new_photo_url = res
+                            
+                            updated_record = {
+                                "日付": e_date,
+                                "ライブ名": e_live,
+                                "アーティスト": e_artist,
+                                "会場名": e_venue,
+                                "感想": e_comment,
+                                "写真": new_photo_url,
+                                "lat": new_lat,
+                                "lon": new_lon,
+                                "ユーザーID": current_user
+                            }
+                            
+                            update_record(target_sheet_index, updated_record)
+                            st.success("更新しました！")
+                            st.session_state.data = load_data(current_user)
+                            st.rerun()
