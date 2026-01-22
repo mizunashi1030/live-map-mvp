@@ -19,7 +19,7 @@ from googleapiclient.http import MediaIoBaseUpload
 
 # --- 1. アプリの設定 ---
 st.set_page_config(page_title="ライブ参戦記録 & 推し活マップ", layout="wide")
-st.title("🎸 ライブ参戦記録 & 推し活マップ")
+st.title("🎸 ライブ参戦記録 & 推し活マップ (Debug Mode)")
 
 # デフォルトの拠点（東京駅）
 DEFAULT_HOME_COORDS = (35.6812, 139.7671)
@@ -53,11 +53,11 @@ def init_google_services():
         )
         gc = gspread.authorize(creds)
         drive_service = build('drive', 'v3', credentials=creds)
-        return gc, drive_service
+        return gc, drive_service, creds.service_account_email
     except Exception as e:
-        return None, None
+        return None, None, None
 
-gc, drive_service = init_google_services()
+gc, drive_service, service_email = init_google_services()
 
 if gc is None:
     st.error("⚠️ Google連携エラー: secrets.tomlの設定を確認してください。")
@@ -73,7 +73,7 @@ except Exception as e:
     st.stop()
 
 # --- 3. ヘルパー関数たち ---
-geolocator = Nominatim(user_agent="my_live_app_mvp_v22")
+geolocator = Nominatim(user_agent="my_live_app_mvp_v24")
 
 VENUE_OVERRIDES = {
     "愛知県国際展示場": [34.8613, 136.8123],
@@ -124,12 +124,12 @@ def upload_photo_to_drive(uploaded_file):
         
         return file.get('id')
     except Exception as e:
-        st.error(f"アップロードエラー: {e}")
-        return None
+        # エラー詳細を返す
+        return f"ERROR: {e}"
 
 @st.cache_data(ttl=3600)
 def get_drive_image_base64(file_id):
-    if not file_id or file_id == "None":
+    if not file_id or file_id == "None" or str(file_id).startswith("ERROR"):
         return None
     try:
         request = drive_service.files().get_media(fileId=file_id)
@@ -154,9 +154,8 @@ def load_data():
         data = worksheet.get_all_records()
         df = pd.DataFrame(data)
         
-        # 🆕 ここが修正ポイント：列名の余計な空白を自動削除！
         if not df.empty:
-            df.columns = df.columns.str.strip()
+            df.columns = df.columns.str.strip() 
 
         required_cols = ["日付", "ライブ名", "アーティスト", "会場名", "感想", "写真", "lat", "lon"]
         
@@ -215,9 +214,12 @@ with st.sidebar.expander("🏠 拠点の入力", expanded=True):
             home_display_name = user_home_name
             st.success(f"📍 {user_home_name} を設定しました")
         else:
-            st.warning("場所が見つかりませんでした。デフォルトを使用します。")
+            st.warning("場所が見つかりませんでした。")
 
 st.sidebar.divider()
+
+# 🤖 デバッグ用表示
+st.sidebar.info(f"**🤖 ロボットのメアド:**\n\n`{service_email}`\n\nこのアドレスがGoogleドライブで「編集者」になっているか確認してください！")
 
 st.sidebar.header("📝 新規参戦記録")
 
@@ -229,18 +231,27 @@ with st.sidebar.form("entry_form"):
     photo = st.file_uploader("思い出の写真", type=["jpg", "png", "jpeg"], key=st.session_state["uploader_key"])
     comment = st.text_area("一言感想", key="input_comment")
     
-    submitted = st.form_submit_button("記録")
+    submitted = st.form_submit_button("記録 (Cloud保存)")
 
     if submitted:
         if not venue or not artist:
             st.error("⚠️ アーティスト名と会場名は必須です！")
+            st.stop() # ここで止める
         else:
             with st.spinner("位置特定＆Googleドライブに保存中..."):
                 coords = get_location_cached(venue)
                 if coords:
                     photo_id = "None"
+                    
                     if photo:
-                        photo_id = upload_photo_to_drive(photo)
+                        result = upload_photo_to_drive(photo)
+                        # エラーかどうかの判定
+                        if result and str(result).startswith("ERROR"):
+                            st.error(f"❌ 写真の保存に失敗しました！\n\nエラー内容:\n{result}")
+                            st.warning("原因: Googleドライブの共有設定が間違っているか、フォルダIDが間違っている可能性があります。")
+                            st.stop() # 🛑 エラー画面のまま停止させる！
+                        else:
+                            photo_id = result
                     
                     new_record = {
                         "日付": date,
@@ -253,16 +264,17 @@ with st.sidebar.form("entry_form"):
                         "lon": coords[1]
                     }
                     add_record(new_record)
-                    st.success("✅ スプレッドシートに保存しました！")
+                    st.success("✅ 保存成功！")
                     st.session_state.data = load_data()
                     st.session_state["should_clear_form"] = True
                     st.rerun()
                 else:
-                    st.error(f"⚠️ 「{venue}」の場所が見つかりません。正式名称で試してください。")
+                    st.error(f"⚠️ 「{venue}」の場所が見つかりません。")
+                    st.stop() # ここで止める
 
 # --- メイン画面 ---
 if not df.empty:
-    tab1, tab2 = st.tabs(["🗺️ マップ", "📊 記録リスト"])
+    tab1, tab2 = st.tabs(["🗺️ マップ & 実績", "📊 記録リスト"])
 
     with tab1:
         total_distance_km = 0
@@ -274,7 +286,7 @@ if not df.empty:
         
         col1, col2 = st.columns(2)
         col1.metric("🎫 総参戦数", f"{len(df)} 回")
-        col2.metric(f"🚗 総移動距離", f"{int(total_distance_km):,} km")
+        col2.metric(f"🚗 総移動距離（{home_display_name}発）", f"{int(total_distance_km):,} km")
         st.markdown("---")
 
         center_lat = df['lat'].mean()
@@ -306,13 +318,11 @@ if not df.empty:
             group = group.sort_values('日付', ascending=False)
             for _, row in group.iterrows():
                 img_tag = ""
-                # "写真"カラムが空でない、かつ "None" ではない場合に画像を表示
                 if row.get("写真") and str(row["写真"]) != "None" and str(row["写真"]).strip() != "":
                     b64 = get_drive_image_base64(row["写真"])
                     if b64:
                         img_tag = f'<img src="{b64}" style="width:100%; border-radius:5px; margin-bottom:5px;">'
                 
-                # ライブ名などもNoneチェック
                 live_text = row.get('ライブ名', '')
                 if live_text is None: live_text = ""
 
@@ -350,7 +360,6 @@ if not df.empty:
         
         st.markdown("---")
         st.write("### 📜 参戦リスト")
-        # リスト読み込みボタン
         st.dataframe(df, hide_index=True, use_container_width=True)
         
         if st.button("🔄 データを再読み込み"):
