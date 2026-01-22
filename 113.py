@@ -88,7 +88,7 @@ VENUE_NAME_MAP = {
     "愛知県国際展示場": "Aichi Sky Expo",
     "AICHI SKY EXPO": "Aichi Sky Expo",
     "東京ドーム": "東京ドーム",
-    "京王アリーナ": "京王アリーナTOKYO"
+    "京王アリーナ": "京王アリーナTOKYO",
     "京王アリーナ東京": "京王アリーナTOKYO" 
 }
 
