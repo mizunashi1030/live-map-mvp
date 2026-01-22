@@ -114,7 +114,7 @@ def get_fiscal_year(date_obj):
         year = date_obj.year
         month = date_obj.month
         # 1月〜3月なら、前の年として扱う（例：2026年1月 → 2025年度）
-        if month < 4:
+        if month < 1:
             return year - 1
         return year
     except:
