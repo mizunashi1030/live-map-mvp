@@ -1,0 +1,10 @@
+streamlit
+pandas
+folium
+streamlit-folium
+geopy
+plotly
+gspread
+google-auth
+google-api-python-client
+Pillow
