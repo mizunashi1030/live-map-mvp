@@ -24,9 +24,7 @@ st.title("🎸 ライブ参戦記録 & 推し活マップ")
 # デフォルトの拠点（東京駅）
 DEFAULT_HOME_COORDS = (35.6812, 139.7671)
 
-# --- 🆕 フォームリセット処理（最優先で実行） ---
-# ここで「リセットフラグ」が立っているかを確認し、立っていれば初期化します。
-# ウィジェットが描画される「前」に値をセットするため、エラーになりません。
+# --- フォームリセット処理 ---
 if "should_clear_form" not in st.session_state:
     st.session_state["should_clear_form"] = False
 
@@ -39,8 +37,8 @@ if st.session_state["should_clear_form"]:
     st.session_state["input_artist"] = ""
     st.session_state["input_venue"] = ""
     st.session_state["input_comment"] = ""
-    st.session_state["uploader_key"] = str(time.time()) # キーを変えてアップローダーをリセット
-    st.session_state["should_clear_form"] = False # フラグを下ろす
+    st.session_state["uploader_key"] = str(time.time())
+    st.session_state["should_clear_form"] = False
 
 # --- 2. Google認証 & データ取得関数 ---
 @st.cache_resource
@@ -75,7 +73,7 @@ except Exception as e:
     st.stop()
 
 # --- 3. ヘルパー関数たち ---
-geolocator = Nominatim(user_agent="my_live_app_mvp_v21")
+geolocator = Nominatim(user_agent="my_live_app_mvp_v22")
 
 VENUE_OVERRIDES = {
     "愛知県国際展示場": [34.8613, 136.8123],
@@ -156,6 +154,10 @@ def load_data():
         data = worksheet.get_all_records()
         df = pd.DataFrame(data)
         
+        # 🆕 ここが修正ポイント：列名の余計な空白を自動削除！
+        if not df.empty:
+            df.columns = df.columns.str.strip()
+
         required_cols = ["日付", "ライブ名", "アーティスト", "会場名", "感想", "写真", "lat", "lon"]
         
         if df.empty:
@@ -220,7 +222,6 @@ st.sidebar.divider()
 st.sidebar.header("📝 新規参戦記録")
 
 with st.sidebar.form("entry_form"):
-    # session_stateにあればそれを初期値として使う（リセット直後は空になる）
     date = st.date_input("日付", key="input_date", value=datetime.date.today())
     live_name = st.text_input("ライブ名・ツアー名", key="input_live")
     artist = st.text_input("アーティスト名", key="input_artist")
@@ -228,7 +229,7 @@ with st.sidebar.form("entry_form"):
     photo = st.file_uploader("思い出の写真", type=["jpg", "png", "jpeg"], key=st.session_state["uploader_key"])
     comment = st.text_area("一言感想", key="input_comment")
     
-    submitted = st.form_submit_button("記録 ")
+    submitted = st.form_submit_button("記録")
 
     if submitted:
         if not venue or not artist:
@@ -254,9 +255,6 @@ with st.sidebar.form("entry_form"):
                     add_record(new_record)
                     st.success("✅ スプレッドシートに保存しました！")
                     st.session_state.data = load_data()
-                    
-                    # 🆕 ここを変更！
-                    # 直接消すのではなく「次回消してねフラグ」を立ててリロードする
                     st.session_state["should_clear_form"] = True
                     st.rerun()
                 else:
@@ -308,16 +306,21 @@ if not df.empty:
             group = group.sort_values('日付', ascending=False)
             for _, row in group.iterrows():
                 img_tag = ""
-                if row.get("写真") and row["写真"] != "None":
+                # "写真"カラムが空でない、かつ "None" ではない場合に画像を表示
+                if row.get("写真") and str(row["写真"]) != "None" and str(row["写真"]).strip() != "":
                     b64 = get_drive_image_base64(row["写真"])
                     if b64:
                         img_tag = f'<img src="{b64}" style="width:100%; border-radius:5px; margin-bottom:5px;">'
                 
+                # ライブ名などもNoneチェック
+                live_text = row.get('ライブ名', '')
+                if live_text is None: live_text = ""
+
                 html += f"""
                 <div style="margin-bottom:15px; background:#f9f9f9; padding:10px; border-radius:5px;">
                     📅 {row['日付']}<br>
                     🎤 <b>{row['アーティスト']}</b><br>
-                    🎵 {row['ライブ名']}<br>
+                    🎵 {live_text}<br>
                     {img_tag}
                     💬 {row['感想']}<br>
                 </div>
@@ -347,6 +350,7 @@ if not df.empty:
         
         st.markdown("---")
         st.write("### 📜 参戦リスト")
+        # リスト読み込みボタン
         st.dataframe(df, hide_index=True, use_container_width=True)
         
         if st.button("🔄 データを再読み込み"):
