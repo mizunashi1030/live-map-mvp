@@ -8,18 +8,17 @@ import plotly.express as px
 import time
 from PIL import Image, ImageOps
 import io
-import base64
 import datetime
 
-# --- Google連携用ライブラリ ---
+# --- ライブラリ ---
 import gspread
 from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
+import cloudinary
+import cloudinary.uploader
 
 # --- 1. アプリの設定 ---
 st.set_page_config(page_title="ライブ参戦記録 & 推し活マップ", layout="wide")
-st.title("🎸 ライブ参戦記録 & 推し活マップ (Debug Mode)")
+st.title("🎸 ライブ参戦記録 & 推し活マップ (Cloudinary版)")
 
 # デフォルトの拠点（東京駅）
 DEFAULT_HOME_COORDS = (35.6812, 139.7671)
@@ -40,40 +39,50 @@ if st.session_state["should_clear_form"]:
     st.session_state["uploader_key"] = str(time.time())
     st.session_state["should_clear_form"] = False
 
-# --- 2. Google認証 & データ取得関数 ---
+# --- 2. 認証 & 設定 ---
 @st.cache_resource
-def init_google_services():
+def init_services():
+    # Google Sheets認証
     try:
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
         ]
         creds = Credentials.from_service_account_info(
             st.secrets["gcp_service_account"], scopes=scopes
         )
         gc = gspread.authorize(creds)
-        drive_service = build('drive', 'v3', credentials=creds)
-        return gc, drive_service, creds.service_account_email
     except Exception as e:
-        return None, None, None
+        return None, None
 
-gc, drive_service, service_email = init_google_services()
+    # Cloudinary設定
+    try:
+        cloudinary.config(
+            cloud_name = st.secrets["cloudinary"]["cloud_name"],
+            api_key = st.secrets["cloudinary"]["api_key"],
+            api_secret = st.secrets["cloudinary"]["api_secret"],
+            secure = True
+        )
+    except Exception:
+        pass # エラー処理は後で
+
+    return gc, creds
+
+gc, creds = init_services()
 
 if gc is None:
-    st.error("⚠️ Google連携エラー: secrets.tomlの設定を確認してください。")
+    st.error("⚠️ 認証エラー: secrets.toml を確認してください。")
     st.stop()
 
 try:
     spreadsheet_id = st.secrets["app_config"]["spreadsheet_id"]
-    drive_folder_id = st.secrets["app_config"]["drive_folder_id"]
     sh = gc.open_by_key(spreadsheet_id)
     worksheet = sh.sheet1
 except Exception as e:
-    st.error(f"⚠️ スプレッドシートへの接続エラー: {e}")
+    st.error(f"⚠️ スプレッドシート接続エラー: {e}")
     st.stop()
 
 # --- 3. ヘルパー関数たち ---
-geolocator = Nominatim(user_agent="my_live_app_mvp_v24")
+geolocator = Nominatim(user_agent="my_live_app_mvp_v25")
 
 VENUE_OVERRIDES = {
     "愛知県国際展示場": [34.8613, 136.8123],
@@ -98,55 +107,24 @@ def get_location_cached(place_name):
         return None
     return None
 
-def upload_photo_to_drive(uploaded_file):
+def upload_photo_to_cloudinary(uploaded_file):
     if uploaded_file is None:
         return None
     try:
-        image = Image.open(uploaded_file)
-        image = ImageOps.exif_transpose(image)
-        image.thumbnail((800, 800))
+        # 画像をバイトデータとして読み込む
+        image_bytes = uploaded_file.getvalue()
         
-        output = io.BytesIO()
-        image.save(output, format="JPEG", quality=70)
-        output.seek(0)
+        # Cloudinaryへアップロード
+        response = cloudinary.uploader.upload(
+            image_bytes, 
+            folder="live_app_photos", # フォルダ名（自動作成されます）
+            resource_type="image"
+        )
         
-        file_metadata = {
-            'name': f"{int(time.time())}_{uploaded_file.name}",
-            'parents': [drive_folder_id]
-        }
-        media = MediaIoBaseUpload(output, mimetype='image/jpeg', resumable=True)
-        
-        file = drive_service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields='id'
-        ).execute()
-        
-        return file.get('id')
+        # アップロードされた画像のURLを返す
+        return response['secure_url']
     except Exception as e:
-        # エラー詳細を返す
         return f"ERROR: {e}"
-
-@st.cache_data(ttl=3600)
-def get_drive_image_base64(file_id):
-    if not file_id or file_id == "None" or str(file_id).startswith("ERROR"):
-        return None
-    try:
-        request = drive_service.files().get_media(fileId=file_id)
-        fh = io.BytesIO()
-        request.execute() 
-        fh.write(request.execute())
-        
-        fh.seek(0)
-        img = Image.open(fh)
-        img.thumbnail((300, 300))
-        
-        buffered = io.BytesIO()
-        img.save(buffered, format="JPEG")
-        encoded = base64.b64encode(buffered.getvalue()).decode()
-        return f"data:image/jpeg;base64,{encoded}"
-    except:
-        return None
 
 # --- 4. データの読み書き ---
 def load_data():
@@ -155,7 +133,7 @@ def load_data():
         df = pd.DataFrame(data)
         
         if not df.empty:
-            df.columns = df.columns.str.strip() 
+            df.columns = df.columns.str.strip()
 
         required_cols = ["日付", "ライブ名", "アーティスト", "会場名", "感想", "写真", "lat", "lon"]
         
@@ -175,7 +153,7 @@ def load_data():
             
         return df
     except Exception as e:
-        st.error(f"データ読み込み中にエラーが発生しました: {e}")
+        st.error(f"データ読み込みエラー: {e}")
         return pd.DataFrame(columns=["日付", "ライブ名", "アーティスト", "会場名", "感想", "写真", "lat", "lon"])
 
 def add_record(record_dict):
@@ -185,7 +163,7 @@ def add_record(record_dict):
         record_dict["アーティスト"],
         record_dict["会場名"],
         record_dict["感想"],
-        record_dict["写真"],
+        record_dict["写真"], # ここにはURLが入ります
         record_dict["lat"],
         record_dict["lon"]
     ]
@@ -218,9 +196,6 @@ with st.sidebar.expander("🏠 拠点の入力", expanded=True):
 
 st.sidebar.divider()
 
-# 🤖 デバッグ用表示
-st.sidebar.info(f"**🤖 ロボットのメアド:**\n\n`{service_email}`\n\nこのアドレスがGoogleドライブで「編集者」になっているか確認してください！")
-
 st.sidebar.header("📝 新規参戦記録")
 
 with st.sidebar.form("entry_form"):
@@ -236,22 +211,19 @@ with st.sidebar.form("entry_form"):
     if submitted:
         if not venue or not artist:
             st.error("⚠️ アーティスト名と会場名は必須です！")
-            st.stop() # ここで止める
         else:
-            with st.spinner("位置特定＆Googleドライブに保存中..."):
+            with st.spinner("位置特定＆写真保存中..."):
                 coords = get_location_cached(venue)
                 if coords:
-                    photo_id = "None"
+                    photo_url = "None"
                     
                     if photo:
-                        result = upload_photo_to_drive(photo)
-                        # エラーかどうかの判定
+                        result = upload_photo_to_cloudinary(photo)
                         if result and str(result).startswith("ERROR"):
-                            st.error(f"❌ 写真の保存に失敗しました！\n\nエラー内容:\n{result}")
-                            st.warning("原因: Googleドライブの共有設定が間違っているか、フォルダIDが間違っている可能性があります。")
-                            st.stop() # 🛑 エラー画面のまま停止させる！
+                            st.error(f"❌ 写真の保存に失敗しました: {result}")
+                            st.stop()
                         else:
-                            photo_id = result
+                            photo_url = result # URLが返ってくる
                     
                     new_record = {
                         "日付": date,
@@ -259,7 +231,7 @@ with st.sidebar.form("entry_form"):
                         "アーティスト": artist,
                         "会場名": venue,
                         "感想": comment,
-                        "写真": photo_id,
+                        "写真": photo_url,
                         "lat": coords[0],
                         "lon": coords[1]
                     }
@@ -270,7 +242,6 @@ with st.sidebar.form("entry_form"):
                     st.rerun()
                 else:
                     st.error(f"⚠️ 「{venue}」の場所が見つかりません。")
-                    st.stop() # ここで止める
 
 # --- メイン画面 ---
 if not df.empty:
@@ -318,13 +289,12 @@ if not df.empty:
             group = group.sort_values('日付', ascending=False)
             for _, row in group.iterrows():
                 img_tag = ""
-                if row.get("写真") and str(row["写真"]) != "None" and str(row["写真"]).strip() != "":
-                    b64 = get_drive_image_base64(row["写真"])
-                    if b64:
-                        img_tag = f'<img src="{b64}" style="width:100%; border-radius:5px; margin-bottom:5px;">'
+                # CloudinaryのURLがある場合
+                photo_val = str(row.get("写真", ""))
+                if photo_val and photo_val != "None" and photo_val.startswith("http"):
+                    img_tag = f'<img src="{photo_val}" style="width:100%; border-radius:5px; margin-bottom:5px;">'
                 
-                live_text = row.get('ライブ名', '')
-                if live_text is None: live_text = ""
+                live_text = row.get('ライブ名', '') or ""
 
                 html += f"""
                 <div style="margin-bottom:15px; background:#f9f9f9; padding:10px; border-radius:5px;">
