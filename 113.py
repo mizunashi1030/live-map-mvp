@@ -24,6 +24,24 @@ st.title("🎸 ライブ参戦記録 & 推し活マップ")
 # デフォルトの拠点（東京駅）
 DEFAULT_HOME_COORDS = (35.6812, 139.7671)
 
+# --- 🆕 フォームリセット処理（最優先で実行） ---
+# ここで「リセットフラグ」が立っているかを確認し、立っていれば初期化します。
+# ウィジェットが描画される「前」に値をセットするため、エラーになりません。
+if "should_clear_form" not in st.session_state:
+    st.session_state["should_clear_form"] = False
+
+if "uploader_key" not in st.session_state:
+    st.session_state["uploader_key"] = "1"
+
+if st.session_state["should_clear_form"]:
+    st.session_state["input_date"] = datetime.date.today()
+    st.session_state["input_live"] = ""
+    st.session_state["input_artist"] = ""
+    st.session_state["input_venue"] = ""
+    st.session_state["input_comment"] = ""
+    st.session_state["uploader_key"] = str(time.time()) # キーを変えてアップローダーをリセット
+    st.session_state["should_clear_form"] = False # フラグを下ろす
+
 # --- 2. Google認証 & データ取得関数 ---
 @st.cache_resource
 def init_google_services():
@@ -57,7 +75,7 @@ except Exception as e:
     st.stop()
 
 # --- 3. ヘルパー関数たち ---
-geolocator = Nominatim(user_agent="my_live_app_mvp_v20")
+geolocator = Nominatim(user_agent="my_live_app_mvp_v21")
 
 VENUE_OVERRIDES = {
     "愛知県国際展示場": [34.8613, 136.8123],
@@ -138,14 +156,11 @@ def load_data():
         data = worksheet.get_all_records()
         df = pd.DataFrame(data)
         
-        # 必要な列定義
         required_cols = ["日付", "ライブ名", "アーティスト", "会場名", "感想", "写真", "lat", "lon"]
         
-        # データが空、または列が足りない場合の補正
         if df.empty:
             return pd.DataFrame(columns=required_cols)
         
-        # ⚠️ ここで 'lon' エラーを防ぐ！足りない列があれば作る
         for col in required_cols:
             if col not in df.columns:
                 df[col] = None
@@ -160,7 +175,6 @@ def load_data():
         return df
     except Exception as e:
         st.error(f"データ読み込み中にエラーが発生しました: {e}")
-        # エラー時も空のDFを返してアプリが落ちないようにする
         return pd.DataFrame(columns=["日付", "ライブ名", "アーティスト", "会場名", "感想", "写真", "lat", "lon"])
 
 def add_record(record_dict):
@@ -177,25 +191,11 @@ def add_record(record_dict):
     worksheet.append_row(row)
     st.cache_data.clear()
 
-# 🆕 フォームをクリアするためのコールバック関数
-def clear_form():
-    st.session_state["input_date"] = datetime.date.today()
-    st.session_state["input_live"] = ""
-    st.session_state["input_artist"] = ""
-    st.session_state["input_venue"] = ""
-    st.session_state["input_comment"] = ""
-    # ファイルアップローダーのクリア（キーを変えることでリセット）
-    st.session_state["uploader_key"] = str(time.time())
-
 # --- 5. アプリ本体 ---
 if 'data' not in st.session_state:
     st.session_state.data = load_data()
 
 df = st.session_state.data
-
-# アップローダーのリセット用キー初期化
-if "uploader_key" not in st.session_state:
-    st.session_state["uploader_key"] = "1"
 
 # --- サイドバー ---
 st.sidebar.title("🛠️ メニュー")
@@ -219,10 +219,8 @@ st.sidebar.divider()
 
 st.sidebar.header("📝 新規参戦記録")
 
-# 🆕 clear_on_submit=True を削除しました！
-# これにより、エラー時に勝手に入力欄が消えるのを防ぎます。
 with st.sidebar.form("entry_form"):
-    # 各入力欄に key を設定して、プログラムから値を操作できるようにする
+    # session_stateにあればそれを初期値として使う（リセット直後は空になる）
     date = st.date_input("日付", key="input_date", value=datetime.date.today())
     live_name = st.text_input("ライブ名・ツアー名", key="input_live")
     artist = st.text_input("アーティスト名", key="input_artist")
@@ -230,12 +228,11 @@ with st.sidebar.form("entry_form"):
     photo = st.file_uploader("思い出の写真", type=["jpg", "png", "jpeg"], key=st.session_state["uploader_key"])
     comment = st.text_area("一言感想", key="input_comment")
     
-    submitted = st.form_submit_button("記録")
+    submitted = st.form_submit_button("記録 ")
 
     if submitted:
         if not venue or not artist:
             st.error("⚠️ アーティスト名と会場名は必須です！")
-            # ここでフォームはクリアされない（入力内容は残る）
         else:
             with st.spinner("位置特定＆Googleドライブに保存中..."):
                 coords = get_location_cached(venue)
@@ -256,17 +253,14 @@ with st.sidebar.form("entry_form"):
                     }
                     add_record(new_record)
                     st.success("✅ スプレッドシートに保存しました！")
-                    
-                    # データの再読み込み
                     st.session_state.data = load_data()
                     
-                    # 🆕 成功した時だけフォームをクリアする
-                    clear_form()
-                    
+                    # 🆕 ここを変更！
+                    # 直接消すのではなく「次回消してねフラグ」を立ててリロードする
+                    st.session_state["should_clear_form"] = True
                     st.rerun()
                 else:
                     st.error(f"⚠️ 「{venue}」の場所が見つかりません。正式名称で試してください。")
-                    # ここでもフォームはクリアされない
 
 # --- メイン画面 ---
 if not df.empty:
