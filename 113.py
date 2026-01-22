@@ -18,7 +18,7 @@ from googleapiclient.http import MediaIoBaseUpload
 
 # --- 1. アプリの設定 ---
 st.set_page_config(page_title="ライブ参戦記録 & 推し活マップ", layout="wide")
-st.title("🎸 ライブ参戦記録 & 推し活マップ (Cloud MVP)")
+st.title("🎸 ライブ参戦記録 & 推し活マップ ")
 
 # デフォルトの拠点（東京駅）
 DEFAULT_HOME_COORDS = (35.6812, 139.7671)
